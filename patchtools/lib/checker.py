@@ -6,6 +6,9 @@ Created on Feb 20, 2014
 
 See the checker module section of the documentation for further information.
 '''
+'''
+ongoing:change to store the patch's line number of old version,maps to patch's line number of new version 
+'''
 
 # 2to3 from types import str
 
