@@ -55,14 +55,17 @@ class Patch(PTObject):
             self.diffs = []
             self.patch_type = 'text'
             self.patch_mode = 'git'
+            print "body is none"
         elif (body[0].startswith('diff --git ')):
             # Split any email footer from the patch data
             (body, _) = body.rpartition('-- ')
             self._parse_body(body, 'diff --git ')
             self.patch_mode = 'git'
+            print "git diff"
         else:
             self._parse_body(body, 'diff -')
             self.patch_mode = 'urn'
+            print "urn"
     
     #++
     @staticmethod

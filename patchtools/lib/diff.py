@@ -11,6 +11,7 @@ from patchtools.lib.ptobject   import PTObject
 from patchtools.lib.hunk       import Hunk
 from patchtools.lib.exceptions import PT_ParameterError
 from patchtools.lib.functions  import Functions as ut
+# from twisted.conch.scripts.conch import old
 
 #++
 class Diff(PTObject):
@@ -58,13 +59,34 @@ class Diff(PTObject):
             elif (string.startswith('--- ')):
                 if (string[4:] == '/dev/null'):
                     self.old_path = '/dev/null'
-                else:    
-                    self.old_path = string[6:] # drop leading 'a/'
+                else:
+                    string = ut.normalize_string(string, False)
+                    old = string.split()
+                    old = old[1].split("/")
+                    i = 0
+                    self.old_path = ""
+                    for p in old:
+                        if (i > 7):
+                            self.old_path += p + "/"    
+                        i += 1
+                    self.old_path = self.old_path[:-1]
+                    print self.old_path
+#                     self.old_path = old[1][7:] # drop leading 'a/'
             elif (string.startswith('+++ ')):
                 if (string[4:] == '/dev/null'):
                     self.new_path = '/dev/null'
-                else:    
-                    self.new_path = string[6:] # drop leading 'b/'   
+                else:
+                    string = ut.normalize_string(string, False)
+                    new = string.split()   
+                    new = new[1].split("/") 
+                    i = 0
+                    self.new_path = ""
+                    for p in new:
+                        if (i > 7):
+                            self.new_path += p + "/"    
+                        i += 1
+                    self.new_path = self.new_path[:-1]
+#                     self.new_path = new[1][7:] # drop leading 'b/'   
     
     def _parse_diff_line(self, string):
         ''' Extract old and new paths from diff line, which has a format like:
@@ -74,8 +96,25 @@ class Diff(PTObject):
         self.spec = string
         string = ut.normalize_string(string, False)
         parts  = string.split(' ')
-        self.a_path = parts[2][2:] # strip 'a/'
-        self.b_path = parts[3][2:] # strip 'b/'
+#         print parts
+        a = parts[2].split("/")
+        b = parts[3].split("/")
+        i = 0
+        self.a_path = ""
+        self.b_path = ""
+        for p in a:
+            if (i > 7):
+                self.a_path += p + "/"    
+            i += 1
+        self.a_path = self.a_path[:-1]
+        i = 0
+        for p in b:
+            if (i > 7):
+                self.b_path += p + "/"    
+            i += 1
+        self.b_path = self.b_path[:-1]                
+#         self.a_path = parts[2][7:] # strip 'a/'
+#         self.b_path = parts[3][7:] # strip 'b/'
         
         # On rare occasions the diff line is corrupted
         if (self.a_path.endswith('/')):

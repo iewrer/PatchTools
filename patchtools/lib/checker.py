@@ -6,7 +6,10 @@ Created on Feb 20, 2014
 
 See the checker module section of the documentation for further information.
 '''
+import sys
+
 from symbol import if_stmt
+from __builtin__ import file
 '''
 ongoing:change to store the patch's line number of old version,maps to patch's line number of new version 
 '''
@@ -28,7 +31,7 @@ class Checker(PTObject):
     #++
     def __init__(self, params):
         """ Constructor
-                   
+        changed version by barry           
         Args:
             params (dict): parameters
                 sourcedir  (string,required):       path to source directory
@@ -141,6 +144,7 @@ class Checker(PTObject):
         
         self._misc_msg('\nPATCH: "%s"' % patchpath)   
         patchpath = ut.join_path(self.patchdir, patchpath)
+#         print patchpath
         pdata = Patch(patchpath)
         if (len(pdata.diffs) == 0):
             self._info_msg('skipping empty/commented patch', 1)
@@ -151,8 +155,13 @@ class Checker(PTObject):
             return -1
                
         errors = 0
+        context = []
+        
         for diff in pdata.diffs:
             
+#             print "a path :" + diff.a_path
+#             print "old path :" + diff.old_path
+#             print "new path :" + diff.new_path
             self._misc_msg('DIFF: "%s"' % diff.spec, 1)
             
             if (not self._check_paths(diff)):
@@ -161,9 +170,13 @@ class Checker(PTObject):
             
             if (diff.old_path == '/dev/null'): # Can't fail on adding lines to a new file
                 continue
-                   
+            
+#             print "old file path :" + ut.join_path(self.sourcedir, diff.old_path)       
             old_lines = ut.read_strings(ut.join_path(self.sourcedir, diff.old_path))
                
+            new_hunks = []
+            new_diff = []
+            
             for hunk in diff.hunks:
                 self._misc_msg('HUNK: "%s"' % hunk.spec, 2)
                 edits = hunk.edits
@@ -174,9 +187,28 @@ class Checker(PTObject):
                 if (not self._check_hunk_format(start, count, len(old_lines), tag)):
                     errors += 1
                     continue
-
-                errors += self._check_hunk_edits(diff.old_path, edits, start, count, note, old_lines)
-                    
+                print "begin to change hunk edits"
+#                 errors += self._check_hunk_edits(diff.old_path, edits, start, count, note, old_lines)
+                #获取并加入新的hunk信息
+                new_hunks.append(self._change_hunk_edits(diff.old_path, edits, start, count, note, old_lines))   
+                print "end for this hunk"
+            #写入当前hunk
+            new_diff.append(diff.spec + "\n")
+            for (new_edits,new_start,context_start,new_count,context_count) in new_hunks:
+                new_diff.append("@@ " + str(new_start) + "," + str(context_count) + " " + str(context_start)  + "," + str(new_count) + "@@\n")
+                for edit in new_edits:
+                    new_diff.append(edit + "\n")
+            
+            context.append("".join(new_diff))
+#             print new_diff
+        #将新的diffs信息写入文件
+        f = file("new.patch","w")
+#         print context
+        f.write("".join(context))
+        f.close()
+            
+            
+        
         self._info_msg("%d patch errors" % errors, 1)
         
         return errors
@@ -189,11 +221,14 @@ class Checker(PTObject):
             (4) file to be created exists in new tree
             (5) file to be deleted does not exist in old tree
         '''
-        
+#         print "source dir :" + self.sourcedir
+#         print "a path :" + diff.a_path
+        print "joint path :" + str(ut.is_file(ut.join_path(self.sourcedir, diff.a_path)))
         if (not ut.is_file(ut.join_path(self.sourcedir, diff.a_path))):
             self._error_msg('"a" file not found: %s' % diff.a_path, 2)
             return False
-        
+#         print "old path :" + diff.old_path
+#         print "joint path :" + ut.join_path(self.sourcedir, diff.old_path)
         if (diff.old_path != '/dev/null'):
             if (not ut.is_file(ut.join_path(self.sourcedir, diff.old_path))):
                 self._error_msg('"old" file not found: %s' % diff.old_path, 2)
@@ -269,11 +304,17 @@ class Checker(PTObject):
             
             op, text1 = edit1[0], edit1[1:]
             norm1 = ut.normalize_string(text1)
+            print "lines: " + str(len(lines)) + "," + str(current)
+            print "index: " + str(len(edits)) + "," + str(index)
+            if (current > len(lines)) :
+                break
             line  = lines[current - 1] # patch line numbers are 1-based
-            norm3 = ut.normalize_string(line)    
+            norm3 = ut.normalize_string(line)
+            print "begin changing for edit now"    
             
             #(edit1,edit2)表示变更(-,+)，即先减后加
             if (edit2 is not None): # change request
+                print "    (-,+)"
                 text2 = edit2[1:]
                 norm2 = ut.normalize_string(text2)
                 if (norm2 == norm3): # Change already applied
@@ -288,7 +329,7 @@ class Checker(PTObject):
                     context_count += 1
                 else:
                     self._error_msg('"before"  line not found at %d: "%s"' % (current, text1), 3)
-                    if (self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count)):
+                    if (self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count, context_count)):
                         new_edits.append(edit2)
                         new_count += 1
                         context_count += 1
@@ -299,9 +340,10 @@ class Checker(PTObject):
                 # A line to be deleted by the patch should be at the specified location,
                 # but may be elsewhere in the file. If self.find is True, we will look for it.
                 # Doing so may return multiple matches.
+                print "    -"
                 if (norm1 != norm3):
                     self._error_msg('"delete" line not found at %d: "%s"' % (current, text1), 3)
-                    self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count)
+                    self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count, context_count)
                 else:
                     if (self.mode == 'complete'):
                         self._ok_msg('"delete" line found at %d: "%s"' % (current, text1), 3)
@@ -315,6 +357,7 @@ class Checker(PTObject):
                 # A line to be inserted by the patch should not be at the specified location,
                 # but may be elsewhere in the file. If self.find is True, we will look for
                 # significant "add" lines below. Doing so may return multiple matches.
+                print "    +"
                 if (norm1 == norm3):
                     self._error_msg('"add"    line found at %d: "%s"' % (current, text1), 3)
                     oldToNew[current] = -1
@@ -329,42 +372,61 @@ class Checker(PTObject):
                     #index表示在edits中的下标
                     up_index = index - 1
                     #查找上家的新位置
-                    if (not (oldToNew.has_key(up)) or oldToNew[up] == -1):
-                        #如果当前上家已经没有新位置，则继续往上找
+                    print "    looking for new up"
+                    #如果当前已经是头了，则直接查找当前行的新位置
+                    if (up <= 0):
+                        self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count, context_count)
+                    #如果还未到头，且
+                    #上家尚未查找过新位置，或者上家的新位置没有找到（上家在新文件中已被删除）
+                    #那么查找上家的新位置，或者查找上家的上家
+                    elif (not (oldToNew.has_key(up)) or oldToNew[up] == -1):
+                        #如果当前上家没找到新位置，则继续往上找
                         while (oldToNew.has_key(up) and oldToNew[up] == -1):
-                            up = up -1
+                            up = up - 1
                             up_index = up_index - 1
                         #查找当前上家的新位置，若没有，则继续往上找
-                        while(up_index > 0):
+                        print "    begin 2nd while"
+                        while(up > 0 and up_index > 0):
                             edit_text = edits[up_index]
                             text = edit_text[1:]
+                            print "text got"
                             if (text.strip() == 'bool'):
+                                print "    pass"
                                 pass
                             if (self._is_landmark(filepath, text)):   
                                 matches = self._find_line(text, lines)
+                                print "    find matched for edit in old"
                                 if (matches):
-                                    min = integer.max_value
+                                    min = sys.maxint
                                     #若有多个match，选择其中离current最近的
                                     for match in matches:
                                         if (abs(match - current) < min):
                                             min = match - current
                                     #记录找到的该行的新位置
                                     oldToNew[up] = (min + current) + 1 
+                                    print "    matched: " + str(up) + "," + str(up_index)
                                     break
-                                else:                  
-                                    up = up -1
-                                    up_index = up_index - 1
-                    #将找到的上家新位置+1，作为自己的新位置，并将当前行加入到new_edits中 
-                    oldToNew[current] = oldToNew[up] + 1
-                    new_edits.append(edit1)
-                    new_count += 1
-                    context_count += 1
+                                else:
+                                    print "    not matched: " + str(up) + "," + str(up_index)                   
+                            up = up - 1
+                            up_index = up_index - 1
+                        #将找到的上家新位置+1，作为自己的新位置，并将当前行加入到new_edits中
+                        if (not (oldToNew.has_key(up))):
+                            errors += 1 
+                        else:
+                            oldToNew[current] = oldToNew[up] + 1
+                            new_edits.append(edit1)
+                            new_count += 1
+                            context_count += 1
+                    print "    finding out up: " +  str(up)
+                current += 1
             else: # (op == ' '): # merge line
                 # a line to be merged by the patch should be at the specified location,
                 # but may be elsewhere in the file. If self.find is True, we will look for it.
                 # Doing so may return multiple matches.
+                print "    merge"
                 if (norm1 != norm3):
-                    self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count)                       
+                    self._match2(filepath, edits, lines, index, current, oldToNew, new_edits, new_count, context_count)                       
                 elif (self.mode == 'complete'):
                     self._ok_msg('"merge"  line found at %d: "%s"' % (current, text1), 3)
                 elif (norm1 == norm3):
@@ -375,7 +437,7 @@ class Checker(PTObject):
                 current += 1 # advance to next edit line  
         #记录新的起始位置
         new_start = start
-        while(oldToNew[new_start] == -1):
+        while((oldToNew.has_key(new_start)) and oldToNew[new_start] == -1):
             new_start += 1
         #待修改
         for edit in edits:
@@ -467,22 +529,22 @@ class Checker(PTObject):
         if (self._is_landmark(filepath, text)):   
             matches = self._find_line(text, strings)
             if (matches):
-                min = integer.max_value
+                min = sys.maxint
                 #若有多个match，选择其中离current最近的
                 for match in matches:
-                    if (abs(match - current) < min):
+                    if (abs(match - current) < abs(min)):
                         min = match - current
                 #记录找到的该行的新位置
                 newLineNum[current] = (min + current) + 1
                 #若当前新位置-上家新位置>1，说明中间插入了新行，将这些新行插入到newEdits中
-                if (abs(newLineNum[current - 1] - newLineNum[current]) > 1):
+                if (newLineNum.has_key(current - 1) and abs(newLineNum[current - 1] - newLineNum[current]) > 1):
                     if (newLineNum[current - 1] > newLineNum[current]):
                         newAddBegin = newLineNum[current]
                         newAddEnd = newLineNum[current - 1]
                     else:
                         newAddBegin = newLineNum[current - 1]
                         newAddEnd = newLineNum[current]
-                    newAdd = lines[newAddBegin - 1 : newAddEnd]
+                    newAdd = strings[newAddBegin - 1 : newAddEnd]
                     for add in newAdd:
                         newContext = ' ' + add
                         newEdits.append(newContext)
