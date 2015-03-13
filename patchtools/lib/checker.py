@@ -284,6 +284,205 @@ class Checker(PTObject):
         """
         return (path == '/dev/null')
     
+    """
+    edits:该hunk的修改
+    start:该hunk的old_start
+    count:该hunk的old_count，即修改前的行数
+    lines:new version的内容
+    目标：修改该hunk的edits/start/count等信息，与lines中的数据进行对应
+    """
+    def _patch_hunk_edits(self, filepath, edits, start, count, note, lines):
+        """ Check edits against the "a" file. Report errors when lines to be deleted
+            or merged are missing, and when lines to be added are present. Note that
+            patch lines and source lines may have the same text, but differ in leading
+            whitespace. We strip and normalize the strings before testing them. 
+            In 'find' mode, try to find missing lines.
+        """
+        errors = warnings = 0
+        
+        current = start
+        
+        #[修改类型，该行修改前新位置,该行修改后新位置]
+        new_place = []
+        
+        mismatches = []
+                
+        #index:记录在当前hunk中是第几行edit
+        for (index, edit1, edit2) in self._get_edits(edits):
+            
+            op, text1 = edit1[0], edit1[1:]
+            norm1 = ut.normalize_string(text1)
+            line  = lines[current - 1] # patch line numbers are 1-based
+            norm3 = ut.normalize_string(line)    
+            
+            #(edit1,edit2)表示变更(-,+)，即先减后加
+            if (edit2 is not None): # change request
+                text2 = edit2[1:]
+                norm2 = ut.normalize_string(text2)
+                if (norm2 == norm3): # Change already applied
+                    self._ok_msg('"after"  line found at %d: "%s"' % (current, text2), 3)
+                    #此时change已经被应用，该两条连续edit可以被删除
+                elif (norm1 == norm3): # Change not yet applied
+                    self._info_msg('"after"  line not found at %d: "%s"' % (current, text2), 3)
+                    #此时change尚未被应用，该两条连续edit需要被添加进来
+                    new_line_current = current
+                    new_line_edited = current
+                    new_place.append((edit1, new_line_current, -1))
+                    new_place.append((edit2, -1, new_line_edited))
+                else:
+                    self._error_msg('"before"  line not found at %d: "%s"' % (current, text1), 3)
+                    #此时edit1的内容不在原位，找到new中修改前的位置
+                    new_line_current = _find_new_place(text1)
+                    #如果在new中能找到该行
+                    if (new_line_current != -1) :
+                        #在new中修改后的位置为-1（被删除）
+                        new_line_edited = current
+                        #记录下该行edit的信息
+                        new_place.append((edit1, new_line_current, -1))
+                        new_place.append((edit2, -1, new_line_edited))
+                    #若new中不存在该行，则删除之
+                    else:
+                        pass                     
+                current += 1 # advance to next edit line
+                    
+            elif (op == '-'): # delete line
+                # A line to be deleted by the patch should be at the specified location,
+                # but may be elsewhere in the file. If self.find is True, we will look for it.
+                # Doing so may return multiple matches.
+                if (norm1 != norm3):
+                    self._error_msg('"delete" line not found at %d: "%s"' % (current, text1), 3)
+                    mismatches += [(index, '-')]
+                    #找到new中修改前的位置
+                    new_line_current = _find_new_place(text1)
+                    #如果在new中能找到该行
+                    if (new_line_current != -1) :
+                        #在new中修改后的位置为-1（被删除）
+                        new_line_edited = -1
+                        #记录下该行edit的信息
+                        new_place.append((edit1, new_line_current, new_line_edited))
+                    #若new中不存在该行，则删除之
+                    else:
+                        pass             
+                else:
+                    if (self.mode == 'complete'):
+                        self._ok_msg('"delete" line found at %d: "%s"' % (current, text1), 3)
+                    #若该行还在原处,添加该行edit的信息，不变即可
+                    new_line_current = current
+                    new_line_edited = -1
+                    new_place.append((edit1, new_line_current, new_line_edited))
+                current += 1 # advance to next edit line
+            
+            elif (op == '+'): # insert line
+                # A line to be inserted by the patch should not be at the specified location,
+                # but may be elsewhere in the file. If self.find is True, we will look for
+                # significant "add" lines below. Doing so may return multiple matches.
+                if (norm1 == norm3):
+                    self._error_msg('"add"    line found at %d: "%s"' % (current, text1), 3)
+                    errors += 1
+                    #new中该位置已有该行，该条edit可被删除
+                else: 
+                    if (self.mode == 'complete'):
+                        self._info_msg('"add"    line not found at next line: "%s"' % text1, 3)
+                    mismatches += [(index, '+')]
+                    new_line_current = _find_new_place(text1)
+                    #若new中已有被添加的行，则删除这条edit
+                    if (new_line_current != -1) :
+                        pass
+                    #否则：
+                    else:
+                        #如果该行不是第一行edit
+                        if (len(new_place)):
+                            #取出上一条edit
+                            (last_edit, last_current, last_edited) = new_place[-1]
+                            last_op, last_text = last_edit[0], last_edit[1:]
+#                             if (last_op == '+' or last_op == ' '):
+                            new_line_edited = last_current + 1
+                            new_line_current = -1
+                        #否则，因为该行edit是+，且该行在new中并没有出现，所以可直接使用start作为修改后的新位置
+                        else:
+                            new_line_current = -1
+                            new_line_edited = start
+                        #添加该行edit
+                        new_place.append((edit1, new_line_current, new_line_edited))              
+            else: # (op == ' '): # merge line
+                # a line to be merged by the patch should be at the specified location,
+                # but may be elsewhere in the file. If self.find is True, we will look for it.
+                # Doing so may return multiple matches.
+                if (norm1 != norm3):
+                    self._warn_msg('"merge"  line not found at %d: "%s"' % (current, text1), 3)
+                    warnings += 1
+                    mismatches += [(index, ' ')]
+                    #找到new中修改前的位置
+                    new_line_current = _find_new_place(text1)
+                    #如果在new中能找到该行
+                    if (new_line_current != -1) :
+                        #在new中修改后的位置为相同位置
+                        new_line_edited = new_line_current
+                        #记录下该行edit的信息
+                        new_place.append((edit1, new_line_current, new_line_edited))
+                    #若new中不存在该行，则删除之
+                    else:
+                        pass   
+                elif (self.mode == 'complete'):
+                    self._ok_msg('"merge"  line found at %d: "%s"' % (current, text1), 3)
+                    #若该行还在原处,添加该行edit的信息，不变即可
+                    new_line_current = current
+                    new_line_edited = current
+                    new_place.append((edit1, new_line_current, new_line_edited))
+                current += 1 # advance to next edit line                                 
+        
+        #查找起始的修改前后新位置
+        find_before = False
+        find_after = False
+        for (edit, before, after) in new_place:
+            if (find_before == False and before != -1):
+                before_start = before
+                find_before = True
+            if (find_after == False and after != -1):
+                after_start = after
+                find_after = True
+            if (find_before and find_after):
+                break
+        
+        #如果前后两条edit的修改前新位置之间还有中间部分，则将其添加进来作为merge lines
+        last_before = 0
+        last_after = 0
+        for i, (edit, before, after) in  enumerate(new_place):
+            if (i != 0 and before - last_before > 1):
+                add = before + 1
+                while (add != last_before):
+                    add_line = lines[add]
+                    add_text = ut.normalize_string(text)
+                    new_place.insert(add, (" " + add_text, add, add))
+                    add += 1
+            last_before = before
+            last_after = after
+        
+        #查找结束的修改前后新位置
+        find_before = False
+        find_after = False
+        for (edit, before, after) in new_place[::-1]:
+            if (find_before == False and before != -1):
+                before_end = before
+                find_before = True
+            if (find_after == False and after != -1):
+                after_end = after
+                find_after = True
+            if (find_before and find_after):
+                break            
+       
+        #计算修改前后的行数统计
+        before_count = before_end - before_start + 1
+        after_count = after_end - after_start + 1
+        
+        if ((len(mismatches) > 0) and self.find):   
+            self._match(filepath, edits, lines, mismatches)
+            return 1
+        else:
+            return 0    
+    
+    
+    
     def _change_hunk_edits(self, filepath, edits, start, count, note, lines):
         
         errors = warnings = 0
